@@ -1,0 +1,13 @@
+[project]
+name = "claude-hub"
+version = "0.1.0"
+description = "TUI for managing Claude Code providers, models, and tier assignments"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+claude-hub = "claude_hub.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
