@@ -4,7 +4,8 @@ import shutil
 import subprocess
 import sys
 
-from claude_hub.config import get_key
+from claude_hub import integration
+from claude_hub.config import context_settings, get_key
 
 
 def launch(cfg: dict, extra_args: list[str] | None = None):
@@ -38,9 +39,43 @@ def launch(cfg: dict, extra_args: list[str] | None = None):
     env["CLAUDE_CODE_SUBAGENT_MODEL"] = "inherit"
     env.pop("ANTHROPIC_API_KEY", None)
 
+    _apply_context(env, cfg)
+
     claude_bin = (
         shutil.which("claude") or
         os.path.expanduser("~/.local/bin/claude")
     )
     args = [claude_bin] + (extra_args or [])
     subprocess.run(args, env=env)
+
+
+def _apply_context(env: dict, cfg: dict):
+    """Raise the context window and register the statusline.
+
+    Claude Code trusts a model's advertised window only on the first-party
+    API. Behind a gateway it falls back to a 200k floor and starts
+    auto-compacting there, however much the model can really hold. The only
+    lever is CLAUDE_CODE_MAX_CONTEXT_TOKENS, and it is read only while
+    DISABLE_COMPACT is set, so setting the window also turns compaction off
+    for good: no auto-compaction and no manual /compact either. Past the
+    model's real window the API starts refusing requests and the way out is
+    /clear.
+
+    That is the trade this ships with, because being compacted at 200k on a
+    model that holds far more is the worse half of it. The statusline draws
+    against the real window from context-windows.json and turns red before the
+    real limit, which is the warning the trade depends on. Turn it all off on
+    the Context tab if you would rather have compaction back.
+    """
+    ctx = context_settings(cfg)
+
+    if ctx.get("disable_compact", True):
+        env["DISABLE_COMPACT"] = "1"
+        env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] = str(ctx["window"])
+    else:
+        # Let Claude Code decide, and do not leave a stale pair behind in the
+        # environment we inherited.
+        for name in ("DISABLE_COMPACT", "CLAUDE_CODE_MAX_CONTEXT_TOKENS"):
+            env.pop(name, None)
+
+    integration.install(statusline=ctx.get("statusline", True))

@@ -36,6 +36,10 @@ exec python3 -m claude_hub "$@"
 LAUNCHER
 chmod +x "$BIN"
 
+say "Wiring the statusline into Claude Code"
+PYTHONPATH="$DEST${PYTHONPATH:+:$PYTHONPATH}" python3 -m claude_hub.integration || \
+  err "statusline not registered, run 'claude-hub -s on' later"
+
 case ":$PATH:" in
   *":$BIN_DIR:"*) ;;
   *) say "NOTE: $BIN_DIR is not in PATH — add 'export PATH=\"\$HOME/.local/bin:\$PATH\"' to your rc" ;;
@@ -43,3 +47,5 @@ esac
 
 echo
 say "Done! Run: claude-hub"
+say "Add a provider on the Providers tab, then press L to launch."
+say "Later: 'claude-hub -u' updates this install in place."

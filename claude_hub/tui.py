@@ -4,7 +4,9 @@ import os
 import sys
 
 from claude_hub import config
+from claude_hub import integration
 from claude_hub import models as mdl
+from claude_hub import updater
 from claude_hub.launcher import launch
 
 C_HEADER = 1
@@ -34,7 +36,16 @@ def _init_colors():
     curses.init_pair(C_STATUS, curses.COLOR_BLACK, curses.COLOR_WHITE)
 
 
-TABS = ["Dashboard", "Providers", "Models", "Tiers", "Profiles"]
+TABS = ["Dashboard", "Providers", "Models", "Tiers", "Profiles", "Context"]
+
+
+def _human(n: int) -> str:
+    n = int(n)
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}M".replace(".0M", "M")
+    if n >= 1000:
+        return f"{round(n / 1000)}k"
+    return str(n)
 
 
 class App:
@@ -51,15 +62,15 @@ class App:
         self.tier_cursor = 0
         self.profile_cursor = 0
         self.prov_cursor = 0
+        self.ctx_cursor = 0
 
     def _load_models(self, force: bool = False):
         self.models_cache = mdl.all_models(self.cfg, force=force)
         self.status = f"{len(self.models_cache)} models loaded"
 
-    def _show_loading(self):
+    def _show_loading(self, msg: str = "Fetching models from providers..."):
         h, w = self.scr.getmaxyx()
         self.scr.erase()
-        msg = "Fetching models from providers..."
         try:
             self.scr.addstr(
                 h // 2, (w - len(msg)) // 2, msg,
@@ -72,6 +83,7 @@ class App:
     def run(self):
         _init_colors()
         curses.curs_set(0)
+        integration.ensure_context_windows()
         self._show_loading()
         self._load_models(force=True)
         self.scr.timeout(100)
@@ -112,6 +124,8 @@ class App:
             elif k == ord("L"):
                 self._launch()
                 return
+            elif k == ord("u"):
+                self._update()
             else:
                 self._handle_tab_key(k)
 
@@ -130,6 +144,8 @@ class App:
             self._key_tiers(k)
         elif self.tab == 4:
             self._key_profiles(k)
+        elif self.tab == 5:
+            self._key_context(k)
 
     def _draw(self):
         self.scr.erase()
@@ -147,6 +163,8 @@ class App:
             self._draw_tiers(h, w)
         elif self.tab == 4:
             self._draw_profiles(h, w)
+        elif self.tab == 5:
+            self._draw_context(h, w)
 
         self._draw_status(h, w)
         self.scr.refresh()
@@ -171,11 +189,12 @@ class App:
 
     def _draw_help(self, h, w):
         helps = {
-            0: "Tab:switch  L:launch  r:refresh  q:quit",
+            0: "Tab:switch  L:launch  r:refresh  u:update  q:quit",
             1: "a:add  e:edit  d:delete  t:toggle  Enter:set key",
             2: "/:search  Enter:assign to tier  r:refresh",
             3: "Enter:change model  d:reset to default",
             4: "a:add  Enter:activate  d:delete  s:save current",
+            5: "Enter:change  d:reset to default",
         }
         txt = helps.get(self.tab, "")
         try:
@@ -216,6 +235,14 @@ class App:
             key = config.get_key(active_provs[0])
             masked = key[:6] + "..." + key[-4:] if len(key) > 10 else key
             self._label(y, 4, "Key:", masked)
+        y += 2
+
+        ctx = config.context_settings(self.cfg)
+        if ctx["disable_compact"]:
+            self._label(y, 4, "Context:",
+                        f"{_human(ctx['window'])} tokens, no compaction")
+        else:
+            self._label(y, 4, "Context:", "Claude Code default (200k, compacts)")
         y += 2
 
         self._title(y, "Tier Assignments"); y += 2
@@ -609,6 +636,129 @@ class App:
                 config.save(self.cfg)
                 self.status = f"Deleted profile: {name}"
 
+    # ── Context ───────────────────────────────────────────
+
+    CTX_ROWS = ("window", "disable_compact", "statusline")
+
+    def _draw_context(self, h, w):
+        ctx = config.context_settings(self.cfg)
+        state = integration.statusline_state()
+        y = 2
+
+        if ctx["disable_compact"]:
+            window = f"{_human(ctx['window'])} tokens"
+            compaction = "off, the window above is in force"
+        else:
+            window = f"{_human(ctx['window'])} tokens (not applied)"
+            compaction = "on, Claude Code compacts at its own 200k floor"
+
+        statusline = {
+            "ours": "on, registered in ~/.claude/settings.json",
+            "none": "on, registers itself at launch",
+            "other": "on, but another statusline is configured",
+        }[state] if ctx["statusline"] else "off"
+
+        rows = [
+            ("Window", window, ctx["disable_compact"]),
+            ("Compaction", compaction, not ctx["disable_compact"]),
+            ("Statusline", statusline, ctx["statusline"] and state != "other"),
+        ]
+
+        self._title(y, "Context Window"); y += 2
+        for i, (name, value, good) in enumerate(rows):
+            is_sel = i == self.ctx_cursor
+            attr = curses.color_pair(C_SELECTED) if is_sel else 0
+            pointer = "▸ " if is_sel else "  "
+            colour = curses.color_pair(C_OK if good else C_WARN)
+            try:
+                self.scr.addstr(y, 2, pointer, attr)
+                self.scr.addstr(y, 4, f"{name:<12}", curses.A_BOLD | attr)
+                self.scr.addstr(y, 17, value[:w - 19], colour)
+            except curses.error:
+                pass
+            y += 1
+
+        y += 1
+        for line in (
+            "Claude Code trusts a model's real window only on the first-party",
+            "API. Behind a gateway it assumes 200k and compacts there. Raising",
+            "the window is the same switch as turning compaction off: /compact",
+            "stops working too, and past the model's real limit the API starts",
+            "refusing requests, so the way out becomes /clear.",
+            "",
+            "The statusline draws against the real windows below, not against",
+            "the number above, and turns red before the real limit.",
+        ):
+            try:
+                self.scr.addstr(y, 4, line[:w - 6], curses.color_pair(C_DIM))
+            except curses.error:
+                pass
+            y += 1
+
+        y += 1
+        windows = integration.context_windows()
+        self._title(y, f"Real Windows ({len(windows)})"); y += 2
+        for key, value in sorted(windows.items()):
+            if y >= h - 3:
+                break
+            try:
+                self.scr.addstr(y, 4, f"{key[:28]:<30}",
+                                curses.color_pair(C_PROVIDER))
+                self.scr.addstr(_human(value), curses.color_pair(C_DIM))
+            except curses.error:
+                pass
+            y += 1
+        if y < h - 3:
+            try:
+                self.scr.addstr(y, 4, f"edit: {integration.CTX_WINDOWS_FILE}",
+                                curses.color_pair(C_DIM))
+            except curses.error:
+                pass
+
+    def _key_context(self, k):
+        ctx = config.context_settings(self.cfg)
+        row = self.CTX_ROWS[self.ctx_cursor]
+
+        if k in (curses.KEY_DOWN, ord("j")):
+            self.ctx_cursor = (self.ctx_cursor + 1) % len(self.CTX_ROWS)
+            return
+        if k in (curses.KEY_UP, ord("k")):
+            self.ctx_cursor = (self.ctx_cursor - 1) % len(self.CTX_ROWS)
+            return
+
+        if k == ord("d"):
+            ctx[row] = config.DEFAULT_CONTEXT[row]
+            self.status = f"{row} reset to default"
+        elif k == 10:
+            if row == "window":
+                value = self._input_dialog(
+                    "Context window", "tokens:", str(ctx["window"]),
+                )
+                if value is None:
+                    return
+                try:
+                    ctx["window"] = max(1, int(value.strip().replace("_", "")))
+                except ValueError:
+                    self.status = "Not a number"
+                    return
+                self.status = f"Window: {_human(ctx['window'])} (applies next launch)"
+            else:
+                ctx[row] = not ctx[row]
+                self.status = f"{row}: {'on' if ctx[row] else 'off'}"
+        else:
+            return
+
+        self.cfg["context"] = ctx
+        config.save(self.cfg)
+        integration.ensure_context_windows()
+
+        # The statusline is registered in Claude Code's own settings, so the
+        # toggle has to reach across into them right now.
+        if ctx["statusline"]:
+            integration.install_statusline()
+        else:
+            integration.remove_statusline()
+
     # ── Dialogs ───────────────────────────────────────────
 
     def _input_dialog(
@@ -809,6 +959,32 @@ class App:
     def _launch(self):
         curses.endwin()
         launch(self.cfg)
+
+    def _update(self):
+        self._show_loading("Checking for updates...")
+        pending, note = updater.check()
+        if not pending:
+            self.status = f"Update: {note}"
+            return
+
+        dirty = updater.local_changes()
+        options = [f"Update now ({note})", "Cancel"]
+        if dirty:
+            options.insert(1, f"Discard {len(dirty)} local change(s) and update")
+        choice = self._choice_dialog("claude-hub update", options)
+        if choice is None or options[choice] == "Cancel":
+            self.status = "Update cancelled"
+            return
+
+        self._show_loading("Updating...")
+        ok, note = updater.update(force=choice == 1 and bool(dirty))
+        if not ok:
+            self.status = f"Update failed: {note}"
+            return
+
+        ctx = config.context_settings(self.cfg)
+        integration.install(statusline=ctx.get("statusline", True))
+        self.status = f"Updated {note}. Restart claude-hub to load it."
 
 
 def run_tui(cfg: dict):

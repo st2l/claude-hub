@@ -4,7 +4,9 @@ import sys
 from claude_hub import config
 from claude_hub.tui import run_tui
 from claude_hub.launcher import launch
+from claude_hub import integration
 from claude_hub import models as mdl
+from claude_hub import updater
 
 
 def main():
@@ -27,6 +29,12 @@ def main():
             print(f"Refreshed: {len(models)} models from "
                   f"{len(cfg.get('providers', []))} providers")
             return
+        if cmd in ("-u", "--update"):
+            updater.main(sys.argv[2:])
+            return
+        if cmd in ("-s", "--statusline"):
+            _statusline(cfg, sys.argv[2:])
+            return
 
     run_tui(cfg)
 
@@ -39,16 +47,40 @@ def _usage():
   claude-hub -l           List all models
   claude-hub -L [args]    Launch claude with current config
   claude-hub -r           Refresh model cache
+  claude-hub -u           Update claude-hub (-c check only, -f discard edits)
+  claude-hub -s [on|off]  Statusline in Claude Code (no arg: show state)
   claude-hub -h           This help
 
 \033[1mTUI Keys:\033[0m
-  Tab/←→    Switch tabs (Dashboard, Providers, Models, Tiers, Profiles)
+  Tab/←→    Switch tabs (Dashboard, Providers, Models, Tiers, Profiles, Context)
   j/k/↑↓    Navigate
   Enter      Select / Edit
   /          Search (Models tab)
   L          Launch claude
   r          Refresh models
+  u          Update claude-hub
   q          Quit""")
+
+
+def _statusline(cfg, argv):
+    want = argv[0].lower() if argv else ""
+    if want in ("on", "off"):
+        cfg["context"] = config.context_settings(cfg)
+        cfg["context"]["statusline"] = want == "on"
+        config.save(cfg)
+        ok, why = (
+            integration.install_statusline() if want == "on"
+            else integration.remove_statusline()
+        )
+        print(f"statusline {want}: {why}" if ok else f"[x] {why}")
+        return
+
+    state = {
+        "ours": "registered by claude-hub",
+        "other": "another statusline is configured",
+        "none": "not registered",
+    }[integration.statusline_state()]
+    print(f"{state}\ncommand: {integration.statusline_command()}")
 
 
 def _list_models(cfg):

@@ -21,6 +21,16 @@ TIER_LABELS = {
     "HAIKU": "Haiku  — fast / background",
 }
 
+# Claude Code clamps every model it cannot vouch for to 200k tokens, and
+# through a gateway it can never vouch for one. CLAUDE_CODE_MAX_CONTEXT_TOKENS
+# lifts the clamp, but only while DISABLE_COMPACT is set, so the two always
+# travel together. See claude_hub/launcher.py for what gets exported.
+DEFAULT_CONTEXT = {
+    "window": 1_000_000,
+    "disable_compact": True,
+    "statusline": True,
+}
+
 
 def _ensure_dirs():
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
@@ -43,22 +53,33 @@ def save(cfg: dict):
 
 
 def _defaults() -> dict:
+    """A fresh config. No provider is assumed: add yours on the Providers tab."""
     return {
-        "providers": [
-            {
-                "name": "CPA st2l",
-                "type": "gateway",
-                "url": "https://ai.st2l.tech",
-                "key_file": "~/.secrets/claude-key",
-                "active": True,
-            }
-        ],
+        "providers": [],
         "tiers": dict(DEFAULT_TIERS),
         "active_profile": "default",
         "profiles": {
             "default": dict(DEFAULT_TIERS),
         },
+        "context": dict(DEFAULT_CONTEXT),
     }
+
+
+def context_settings(cfg: dict) -> dict:
+    """Context settings with the defaults filled in.
+
+    Merged rather than read straight out of the config so that a config file
+    written by an older version still gets the 1M window.
+    """
+    merged = dict(DEFAULT_CONTEXT)
+    stored = cfg.get("context")
+    if isinstance(stored, dict):
+        merged.update(stored)
+    try:
+        merged["window"] = max(1, int(merged["window"]))
+    except (TypeError, ValueError):
+        merged["window"] = DEFAULT_CONTEXT["window"]
+    return merged
 
 
 def get_key(provider: dict) -> str:
