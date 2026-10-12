@@ -2,14 +2,15 @@
 import sys
 
 from claude_hub import config
-from claude_hub.tui import run_tui
-from claude_hub.launcher import launch
 from claude_hub import integration
 from claude_hub import models as mdl
 from claude_hub import updater
+from claude_hub.launcher import launch
+from claude_hub.system import GLYPH, enable_ansi
 
 
 def main():
+    enable_ansi()
     cfg = config.load()
 
     if len(sys.argv) > 1:
@@ -36,11 +37,29 @@ def main():
             _statusline(cfg, sys.argv[2:])
             return
 
+    _run_tui(cfg)
+
+
+def _run_tui(cfg):
+    """Start the curses TUI, explaining the one dependency Windows needs."""
+    try:
+        from claude_hub.tui import run_tui
+    except ImportError as exc:
+        if "curses" not in str(exc):
+            raise
+        print("\033[1;31mThe TUI needs the curses module.\033[0m")
+        print("On Windows, install it with:  "
+              f"{sys.executable} -m pip install --user windows-curses")
+        print("CLI mode works without it: claude-hub -l / -L / -r")
+        sys.exit(1)
     run_tui(cfg)
 
 
 def _usage():
-    print("""\033[1mclaude-hub\033[0m — TUI for managing Claude Code providers
+    dash = GLYPH["dash"]
+    leftright = GLYPH["leftright"]
+    updown = GLYPH["updown"]
+    print(f"""\033[1mclaude-hub\033[0m {dash} TUI for Claude Code providers
 
 \033[1mUsage:\033[0m
   claude-hub              Open TUI
@@ -52,8 +71,9 @@ def _usage():
   claude-hub -h           This help
 
 \033[1mTUI Keys:\033[0m
-  Tab/←→    Switch tabs (Dashboard, Providers, Models, Tiers, Profiles, Context)
-  j/k/↑↓    Navigate
+  Tab/{leftright}    Switch tabs (Dashboard, Providers, Models, Tiers,
+             Profiles, Context)
+  j/k/{updown}    Navigate
   Enter      Select / Edit
   /          Search (Models tab)
   L          Launch claude
@@ -89,7 +109,7 @@ def _list_models(cfg):
         print("No models. Check your providers and API keys.")
         return
     print(f"{'Provider':<16} {'Model':<42} {'ID'}")
-    print("─" * 100)
+    print(GLYPH["hline"] * 100)
     for m in models:
         display_id = m.get("clean_id", m["id"])
         print(f"{m['provider']:<16} {m['name']:<42} {display_id}")

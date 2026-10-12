@@ -12,6 +12,7 @@ Everything here is idempotent, so launcher.py can call it on every launch.
 """
 import json
 import shutil
+import sys
 from pathlib import Path
 
 from claude_hub.config import CONFIG_DIR, _ensure_dirs
@@ -58,8 +59,14 @@ DEFAULT_CTX_WINDOWS = {
 
 
 def statusline_command() -> str:
-    """The command Claude Code should run, pointing at this very checkout."""
-    return f"python3 {STATUSLINE}"
+    """The command Claude Code should run, pointing at this very checkout.
+
+    sys.executable rather than `python3`: Windows installs ship python.exe and
+    py.exe but no python3, and this way a venv or pip install keeps using the
+    interpreter it was installed for. Quoted because both paths can contain
+    spaces, which they routinely do under C:\\Users and Program Files.
+    """
+    return f'"{sys.executable}" "{STATUSLINE}"'
 
 
 def _read_settings() -> dict:

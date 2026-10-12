@@ -1,9 +1,10 @@
 """Persistent configuration: providers, tiers, profiles."""
 import json
-import os
 from pathlib import Path
 
-CONFIG_DIR = Path.home() / ".config" / "claude-hub"
+from claude_hub.system import GLYPH, config_dir, restrict_file
+
+CONFIG_DIR = config_dir()
 CONFIG_FILE = CONFIG_DIR / "config.json"
 CACHE_DIR = CONFIG_DIR / "cache"
 
@@ -14,11 +15,13 @@ DEFAULT_TIERS = {
     "HAIKU": "claude-haiku-4-5-20251001",
 }
 
+_DASH = GLYPH["dash"]
+
 TIER_LABELS = {
-    "FABLE": "Fable  — primary model",
-    "SONNET": "Sonnet — working model",
-    "OPUS": "Opus   — complex tasks",
-    "HAIKU": "Haiku  — fast / background",
+    "FABLE": f"Fable  {_DASH} primary model",
+    "SONNET": f"Sonnet {_DASH} working model",
+    "OPUS": f"Opus   {_DASH} complex tasks",
+    "HAIKU": f"Haiku  {_DASH} fast / background",
 }
 
 # Claude Code clamps every model it cannot vouch for to 200k tokens, and
@@ -89,11 +92,16 @@ def get_key(provider: dict) -> str:
     return provider.get("key", "")
 
 
-def set_key(provider: dict, key: str):
+def set_key(provider: dict, key: str) -> str | None:
+    """Store the provider key in its own file, owner-readable only.
+
+    Returns None on success, or a warning when the file could not be locked
+    down to the current user.
+    """
     kf = Path(provider.get("key_file", "")).expanduser()
     if str(kf) == ".":
         kf = CONFIG_DIR / f"key-{provider['name'].lower().replace(' ', '-')}"
         provider["key_file"] = str(kf)
     kf.parent.mkdir(parents=True, exist_ok=True)
     kf.write_text(key)
-    os.chmod(kf, 0o600)
+    return restrict_file(kf)

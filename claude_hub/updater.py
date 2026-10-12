@@ -8,12 +8,15 @@ merge conflict. Anything we would throw away is reported first.
 If this copy is not a git checkout at all (a tarball, a pip install, a
 site-packages copy) there is nothing to pull, and the answer is the installer.
 """
+import os
 import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 BRANCH = "main"
 INSTALL_CMD = (
+    "irm https://raw.githubusercontent.com/st2l/claude-hub/main/install.ps1 | iex"
+    if os.name == "nt" else
     "curl -fsSL https://raw.githubusercontent.com/st2l/claude-hub/main/"
     "install.sh | bash"
 )

@@ -1,13 +1,16 @@
 """Curses-based TUI for claude-hub."""
 import curses
 import os
-import sys
 
 from claude_hub import config
 from claude_hub import integration
 from claude_hub import models as mdl
 from claude_hub import updater
 from claude_hub.launcher import launch
+from claude_hub.system import GLYPH
+
+ENTER_KEYS = (10, 13, curses.KEY_ENTER)
+BACKSPACE_KEYS = (curses.KEY_BACKSPACE, 127, 8)
 
 C_HEADER = 1
 C_ACTIVE_TAB = 2
@@ -23,16 +26,21 @@ C_STATUS = 10
 
 def _init_colors():
     curses.start_color()
-    curses.use_default_colors()
-    curses.init_pair(C_HEADER, curses.COLOR_CYAN, -1)
+    try:
+        curses.use_default_colors()
+        bg = -1
+    except curses.error:
+        bg = curses.COLOR_BLACK
+    dim = 8 if curses.COLORS >= 16 else curses.COLOR_WHITE
+    curses.init_pair(C_HEADER, curses.COLOR_CYAN, bg)
     curses.init_pair(C_ACTIVE_TAB, curses.COLOR_BLACK, curses.COLOR_CYAN)
-    curses.init_pair(C_INACTIVE_TAB, curses.COLOR_WHITE, -1)
+    curses.init_pair(C_INACTIVE_TAB, curses.COLOR_WHITE, bg)
     curses.init_pair(C_SELECTED, curses.COLOR_BLACK, curses.COLOR_GREEN)
-    curses.init_pair(C_DIM, 8, -1)
-    curses.init_pair(C_OK, curses.COLOR_GREEN, -1)
-    curses.init_pair(C_WARN, curses.COLOR_YELLOW, -1)
-    curses.init_pair(C_PROVIDER, curses.COLOR_MAGENTA, -1)
-    curses.init_pair(C_SEARCH, curses.COLOR_CYAN, -1)
+    curses.init_pair(C_DIM, dim, bg)
+    curses.init_pair(C_OK, curses.COLOR_GREEN, bg)
+    curses.init_pair(C_WARN, curses.COLOR_YELLOW, bg)
+    curses.init_pair(C_PROVIDER, curses.COLOR_MAGENTA, bg)
+    curses.init_pair(C_SEARCH, curses.COLOR_CYAN, bg)
     curses.init_pair(C_STATUS, curses.COLOR_BLACK, curses.COLOR_WHITE)
 
 
@@ -96,9 +104,9 @@ class App:
                 if k == 27:
                     self.searching = False
                     self.search = ""
-                elif k in (curses.KEY_BACKSPACE, 127, 8):
+                elif k in BACKSPACE_KEYS:
                     self.search = self.search[:-1]
-                elif k == 10:
+                elif k in ENTER_KEYS:
                     self.searching = False
                 elif 32 <= k < 127:
                     self.search += chr(k)
@@ -283,11 +291,10 @@ class App:
             if y >= h - 3:
                 break
             active = p.get("active", True)
-            marker = "●" if active else "○"
-            color = C_OK if active else C_DIM
+            marker = GLYPH["on"] if active else GLYPH["off"]
             attr = curses.color_pair(C_SELECTED) if i == self.prov_cursor else 0
             key = config.get_key(p)
-            has_key = "✓" if key else "✗"
+            has_key = GLYPH["yes"] if key else GLYPH["no"]
             key_color = C_OK if key else C_WARN
             line = f"  {marker} {p['name']:<20} {p['type']:<10} {p['url']:<35}"
             try:
@@ -323,7 +330,7 @@ class App:
             self.prov_cursor = max(0, self.prov_cursor - 1)
             config.save(self.cfg)
             self._load_models()
-        elif k == 10 and provs:
+        elif k in ENTER_KEYS and provs:
             self._set_provider_key(provs[self.prov_cursor])
 
     def _add_provider(self):
@@ -360,13 +367,12 @@ class App:
         }
 
         key = self._input_dialog("API Key", "API Key (or empty to skip):")
-        if key:
-            config.set_key(provider, key)
+        warning = config.set_key(provider, key) if key else None
 
         self.cfg.setdefault("providers", []).append(provider)
         config.save(self.cfg)
         self._load_models()
-        self.status = f"Added provider: {name}"
+        self.status = warning or f"Added provider: {name}"
 
     def _edit_provider(self, prov: dict):
         name = self._input_dialog("Edit Provider", "Name:", prov["name"])
@@ -380,14 +386,14 @@ class App:
 
     def _set_provider_key(self, prov: dict):
         key = self._input_dialog(
-            f"Set Key — {prov['name']}",
+            f'Set Key {GLYPH["dash"]} {prov["name"]}',
             "API Key:",
             mask=True,
         )
         if key:
-            config.set_key(prov, key)
+            warning = config.set_key(prov, key)
             config.save(self.cfg)
-            self.status = f"Key saved for {prov['name']}"
+            self.status = warning or f"Key saved for {prov['name']}"
 
     # ── Models ────────────────────────────────────────────
 
@@ -405,7 +411,7 @@ class App:
         filtered = self._filtered_models()
         y = 2
         search_indicator = (
-            f"  Search: {self.search}█"
+            f'  Search: {self.search}{GLYPH["caret"]}'
             if self.searching
             else f"  /{self.search}" if self.search else ""
         )
@@ -421,7 +427,6 @@ class App:
         y += 2
 
         tiers = self.cfg.get("tiers", {})
-        assigned_ids = set(tiers.values())
         visible = h - 6
         if self.cursor >= self.scroll + visible:
             self.scroll = self.cursor - visible + 1
@@ -457,7 +462,7 @@ class App:
                 else curses.color_pair(C_WARN)
             )
 
-            pointer = "▸ " if is_sel else "  "
+            pointer = f'{GLYPH["pointer"]} ' if is_sel else "  "
             try:
                 self.scr.addstr(y, 2, pointer, attr)
                 self.scr.addstr(y, 4, f"{m['provider']:<16}", prov_attr)
@@ -481,17 +486,18 @@ class App:
             )
         elif k == curses.KEY_PPAGE:
             self.cursor = max(self.cursor - 10, 0)
-        elif k == 10 and filtered:
+        elif k in ENTER_KEYS and filtered:
             m = filtered[self.cursor]
             tier = self._choice_dialog(
                 f"Assign '{m['name']}' to tier",
-                [f"{t} — {l}" for t, l in config.TIER_LABELS.items()],
+                [f'{t} {GLYPH["dash"]} {l}'
+                 for t, l in config.TIER_LABELS.items()],
             )
             if tier is not None:
                 tier_key = list(config.TIER_LABELS.keys())[tier]
                 self.cfg["tiers"][tier_key] = m["id"]
                 config.save(self.cfg)
-                self.status = f"{tier_key} → {m['name']}"
+                self.status = f'{tier_key} {GLYPH["arrow"]} {m["name"]}'
 
     # ── Tiers ─────────────────────────────────────────────
 
@@ -505,7 +511,7 @@ class App:
             name = self._model_name(mid)
             is_sel = i == self.tier_cursor
             attr = curses.color_pair(C_SELECTED) if is_sel else 0
-            pointer = "▸ " if is_sel else "  "
+            pointer = f'{GLYPH["pointer"]} ' if is_sel else "  "
             is_default = mid == config.DEFAULT_TIERS.get(tier)
 
             try:
@@ -514,7 +520,7 @@ class App:
                 self.scr.addstr(y, 12, label[:w - 14],
                                 curses.color_pair(C_DIM))
                 y += 1
-                self.scr.addstr(y, 8, f"→ {name[:w - 12]}",
+                self.scr.addstr(y, 8, f'{GLYPH["arrow"]} {name[:w - 12]}',
                                 curses.color_pair(C_OK) | attr)
                 if is_default:
                     self.scr.addstr(" (default)",
@@ -535,7 +541,7 @@ class App:
             self.tier_cursor = (self.tier_cursor + 1) % len(tier_keys)
         elif k in (curses.KEY_UP, ord("k")):
             self.tier_cursor = (self.tier_cursor - 1) % len(tier_keys)
-        elif k == 10:
+        elif k in ENTER_KEYS:
             tier = tier_keys[self.tier_cursor]
             models = self._filtered_models() or self.models_cache
             idx = self._model_picker(
@@ -546,7 +552,9 @@ class App:
             if idx is not None:
                 self.cfg["tiers"][tier] = models[idx]["id"]
                 config.save(self.cfg)
-                self.status = f"{tier} → {models[idx]['name']}"
+                self.status = (
+                    f'{tier} {GLYPH["arrow"]} {models[idx]["name"]}'
+                )
         elif k == ord("d"):
             tier = tier_keys[self.tier_cursor]
             self.cfg["tiers"][tier] = config.DEFAULT_TIERS[tier]
@@ -565,8 +573,8 @@ class App:
             is_sel = i == self.profile_cursor
             is_active = name == active
             attr = curses.color_pair(C_SELECTED) if is_sel else 0
-            marker = "● " if is_active else "○ "
-            pointer = "▸ " if is_sel else "  "
+            marker = f'{GLYPH["on"]} ' if is_active else f'{GLYPH["off"]} '
+            pointer = f'{GLYPH["pointer"]} ' if is_sel else "  "
 
             try:
                 self.scr.addstr(y, 2, pointer, attr)
@@ -605,7 +613,7 @@ class App:
                 self.profile_cursor = (
                     (self.profile_cursor - 1) % len(pnames)
                 )
-        elif k == 10 and pnames:
+        elif k in ENTER_KEYS and pnames:
             name = pnames[self.profile_cursor]
             self.cfg["active_profile"] = name
             self.cfg["tiers"] = dict(profiles[name])
@@ -668,7 +676,7 @@ class App:
         for i, (name, value, good) in enumerate(rows):
             is_sel = i == self.ctx_cursor
             attr = curses.color_pair(C_SELECTED) if is_sel else 0
-            pointer = "▸ " if is_sel else "  "
+            pointer = f'{GLYPH["pointer"]} ' if is_sel else "  "
             colour = curses.color_pair(C_OK if good else C_WARN)
             try:
                 self.scr.addstr(y, 2, pointer, attr)
@@ -729,7 +737,7 @@ class App:
         if k == ord("d"):
             ctx[row] = config.DEFAULT_CONTEXT[row]
             self.status = f"{row} reset to default"
-        elif k == 10:
+        elif k in ENTER_KEYS:
             if row == "window":
                 value = self._input_dialog(
                     "Context window", "tokens:", str(ctx["window"]),
@@ -792,10 +800,10 @@ class App:
             if k == 27:
                 curses.curs_set(0)
                 return None
-            elif k in (10, 13):
+            elif k in ENTER_KEYS:
                 curses.curs_set(0)
                 return value
-            elif k in (curses.KEY_BACKSPACE, 127, 8):
+            elif k in BACKSPACE_KEYS:
                 value = value[:-1]
             elif 32 <= k < 127:
                 value += chr(k)
@@ -824,7 +832,7 @@ class App:
                     curses.color_pair(C_SELECTED) if i == sel
                     else curses.color_pair(C_DIM)
                 )
-                pointer = "▸ " if i == sel else "  "
+                pointer = f'{GLYPH["pointer"]} ' if i == sel else "  "
                 try:
                     win.addstr(i + 2, 2, f"{pointer}{opt}"[:dw - 4], attr)
                 except curses.error:
@@ -837,7 +845,7 @@ class App:
                 sel = (sel + 1) % len(options)
             elif k in (curses.KEY_UP, ord("k")):
                 sel = (sel - 1) % len(options)
-            elif k in (10, 13):
+            elif k in ENTER_KEYS:
                 return sel
 
     def _model_picker(
@@ -871,7 +879,10 @@ class App:
 
             self.scr.erase()
             self._title(1, title)
-            search_line = f"  Search: {query}█" if query else "  Type to search"
+            search_line = (
+                f'  Search: {query}{GLYPH["caret"]}' if query
+                else "  Type to search"
+            )
             try:
                 self.scr.addstr(2, 2, search_line[:w - 4],
                                 curses.color_pair(C_SEARCH))
@@ -886,8 +897,8 @@ class App:
                 is_sel = vi == sel
                 is_cur = m["id"] == current_id
                 attr = curses.color_pair(C_SELECTED) if is_sel else 0
-                marker = " ●" if is_cur else "  "
-                pointer = "▸" if is_sel else " "
+                marker = f' {GLYPH["on"]}' if is_cur else "  "
+                pointer = GLYPH["pointer"] if is_sel else " "
                 try:
                     self.scr.addstr(y, 1, pointer, attr)
                     self.scr.addstr(
@@ -902,7 +913,8 @@ class App:
             try:
                 self.scr.addstr(
                     h - 2, 2,
-                    "↑↓:navigate  Enter:select  Esc:cancel  type:search",
+                    f'{GLYPH["updown"]}:navigate  Enter:select'
+                    '  Esc:cancel  type:search',
                     curses.color_pair(C_DIM),
                 )
             except curses.error:
@@ -920,10 +932,10 @@ class App:
                 sel = min(sel + 10, len(filtered) - 1)
             elif k == curses.KEY_PPAGE:
                 sel = max(sel - 10, 0)
-            elif k in (10, 13):
+            elif k in ENTER_KEYS:
                 if filtered and filtered[sel][1]["id"]:
                     return filtered[sel][0]
-            elif k in (curses.KEY_BACKSPACE, 127, 8):
+            elif k in BACKSPACE_KEYS:
                 query = query[:-1]
                 sel = 0
                 scroll = 0
@@ -943,7 +955,7 @@ class App:
     def _title(self, y: int, text: str):
         try:
             self.scr.addstr(
-                y, 2, f"── {text} ",
+                y, 2, f'{GLYPH["hline"] * 2} {text} ',
                 curses.color_pair(C_HEADER) | curses.A_BOLD,
             )
         except curses.error:

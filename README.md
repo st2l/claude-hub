@@ -5,15 +5,48 @@ providers: add gateways / direct API endpoints, store keys, fetch model lists,
 assign models to Claude Code's 4 tiers (Fable / Opus / Sonnet / Haiku), and
 switch between saved profiles — then launch `claude` with the chosen setup.
 
-Pure Python 3 stdlib (curses), no dependencies.
+Pure Python 3 stdlib (curses), no dependencies on Linux and macOS. Runs on
+Linux, macOS and Windows 10/11.
 
 ## Install
+
+### Linux / macOS
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/st2l/claude-hub/main/install.sh | bash
 ```
 
-Requires: `python3`, `git`, and Claude Code (`npm install -g @anthropic-ai/claude-code`).
+Requires `python3` and `git`.
+
+### Windows
+
+In PowerShell (no Administrator, no git needed):
+
+```powershell
+irm https://raw.githubusercontent.com/st2l/claude-hub/main/install.ps1 | iex
+```
+
+Requires Python 3.11+ with pip (`winget install Python.Python.3.13`). The
+installer pip-installs claude-hub plus [windows-curses] (Windows has no stdlib
+`curses`), then puts `claude-hub.exe` on your user PATH. Re-run it to upgrade.
+
+Already have Python set up? `pip install --user windows-curses` plus
+`pip install --user https://github.com/st2l/claude-hub/archive/refs/heads/main.zip`
+does the same thing.
+
+[windows-curses]: https://pypi.org/project/windows-curses/
+
+### Claude Code itself
+
+claude-hub launches `claude`, so Claude Code has to be installed:
+
+```bash
+curl -fsSL https://claude.ai/install.sh | bash   # Linux / macOS
+```
+
+```powershell
+irm https://claude.ai/install.ps1 | iex          # Windows
+```
 
 ## Usage
 
@@ -60,7 +93,8 @@ There is no provider out of the box. Open the TUI, press `a` on the
 
 ## Config
 
-`~/.config/claude-hub/config.json`:
+`~/.config/claude-hub/config.json`, or `%APPDATA%\claude-hub\config.json` on
+Windows:
 
 ```json
 {
@@ -88,6 +122,11 @@ There is no provider out of the box. Open the TUI, press `a` on the
   }
 }
 ```
+
+Provider keys live in their own files, never in that JSON: `chmod 600` on
+POSIX, `icacls /inheritance:r /grant:r <you>:(R,W)` on Windows. If the lockdown
+fails the TUI says so in the status line instead of claiming the key is saved
+safely.
 
 Launch sets `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, the four
 `ANTHROPIC_DEFAULT_*_MODEL` vars and `CLAUDE_CODE_SUBAGENT_MODEL=inherit`,
@@ -150,7 +189,8 @@ claude-hub -u -f       # discard local edits to the checkout and update
 
 Or press `u` in the TUI. The update is a `git reset --hard` onto
 `origin/main` inside the install directory, so local edits there are reported
-and refused rather than merged.
+and refused rather than merged. The Windows install is a pip install with no
+clone to reset, so `-u` there says so and prints the installer command instead.
 
 ## How it launches claude
 
@@ -166,6 +206,29 @@ ANTHROPIC_DEFAULT_SONNET_MODEL=... \
 ANTHROPIC_DEFAULT_HAIKU_MODEL=... \
 CLAUDE_CODE_SUBAGENT_MODEL=inherit \
 claude
+```
+
+## Windows notes
+
+- **The TUI needs `windows-curses`.** Without it `claude-hub` prints the pip
+  command to fix it; `-l`, `-L` and `-r` keep working either way.
+- **Box-drawing characters** are swapped for ASCII when the console code page
+  is not UTF-8 (`chcp` shows 866 or 1251), so nothing turns into mojibake.
+  Windows Terminal with UTF-8 gets the full glyph set.
+- **`claude-hub` not found after install?** Open a new terminal — PATH changes
+  do not reach already-running shells.
+- **The statusline** is registered with the interpreter claude-hub runs on
+  (`sys.executable`), not `python3`, which Windows does not have. It always
+  emits UTF-8 regardless of the console code page.
+- **`claude-hub -u`** needs a git clone; the pip install does not have one. Re-run
+  `install.ps1` to upgrade.
+- **WSL** is the POSIX install: run `install.sh` inside WSL, not `install.ps1`.
+
+## Development
+
+```bash
+python3 -m unittest discover -s tests -t .   # platform branches, both OSes
+python3 -m claude_hub                        # run from a clone
 ```
 
 ## License

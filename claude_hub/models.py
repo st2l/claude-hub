@@ -1,7 +1,8 @@
 """Model fetching, caching, and provider decoding."""
 import json
-import subprocess
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 from claude_hub.config import CACHE_DIR, get_key
@@ -57,23 +58,35 @@ def fetch_models(provider: dict, force: bool = False) -> list[dict]:
     return []
 
 
+def _get_json(url: str, headers: dict) -> dict | None:
+    """GET `url` and parse the JSON body, or None if the call did not work.
+
+    Callers fall back to a cached model list, so a failure is a signal here,
+    not an error to raise.
+    """
+    request = urllib.request.Request(url, headers=headers)
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            body = response.read().decode("utf-8", "replace")
+    except (urllib.error.URLError, OSError, ValueError):
+        return None
+    try:
+        return json.loads(body)
+    except json.JSONDecodeError:
+        return None
+
+
 def _fetch_gateway(provider: dict) -> list[dict]:
     key = get_key(provider)
     url = provider["url"].rstrip("/") + "/v1/models"
-    try:
-        result = subprocess.run(
-            ["curl", "-sS", "--max-time", "10",
-             "-H", f"Authorization: Bearer {key}",
-             "-H", "Content-Type: application/json", url],
-            capture_output=True, text=True, timeout=15,
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            data = json.loads(result.stdout)
-            raw = data.get("data", data.get("models", []))
-            if raw:
-                return [_parse_api_model(m) for m in raw]
-    except Exception:
-        pass
+    data = _get_json(url, {
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json",
+    })
+    if data:
+        raw = data.get("data", data.get("models", []))
+        if raw:
+            return [_parse_api_model(m) for m in raw]
 
     cpa_cache = Path.home() / ".claude" / "cache" / "gateway-models.json"
     if cpa_cache.exists():
@@ -90,19 +103,15 @@ def _fetch_gateway(provider: dict) -> list[dict]:
 def _fetch_direct(provider: dict) -> list[dict]:
     key = get_key(provider)
     url = provider["url"].rstrip("/") + "/v1/models"
-    try:
-        result = subprocess.run(
-            ["curl", "-sS", "--max-time", "10",
-             "-H", f"x-api-key: {key}",
-             "-H", f"Authorization: Bearer {key}",
-             "-H", "anthropic-version: 2023-06-01", url],
-            capture_output=True, text=True, timeout=15,
-        )
-        data = json.loads(result.stdout)
-        raw = data.get("data", data.get("models", []))
-        return [_parse_api_model(m) for m in raw]
-    except Exception:
+    data = _get_json(url, {
+        "x-api-key": key,
+        "Authorization": f"Bearer {key}",
+        "anthropic-version": "2023-06-01",
+    })
+    if not data:
         return []
+    raw = data.get("data", data.get("models", []))
+    return [_parse_api_model(m) for m in raw]
 
 
 def _parse_api_model(m: dict) -> dict:

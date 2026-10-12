@@ -26,9 +26,25 @@ import time
 from pathlib import Path
 
 HOME = Path.home()
-HUB_CONFIG = HOME / ".config" / "claude-hub" / "config.json"
-HUB_CACHE = HOME / ".config" / "claude-hub" / "cache"
-CTX_OVERRIDES = HOME / ".config" / "claude-hub" / "context-windows.json"
+
+
+def _hub_config_dir():
+    """Where claude-hub keeps its config. Mirrors claude_hub/system.py.
+
+    Duplicated rather than imported: Claude Code runs this file as a plain
+    script with no PYTHONPATH, so it cannot import the package.
+    """
+    if os.name == "nt":
+        roaming = os.environ.get("APPDATA")
+        base = Path(roaming) if roaming else HOME / "AppData" / "Roaming"
+        return base / "claude-hub"
+    return HOME / ".config" / "claude-hub"
+
+
+HUB_DIR = _hub_config_dir()
+HUB_CONFIG = HUB_DIR / "config.json"
+HUB_CACHE = HUB_DIR / "cache"
+CTX_OVERRIDES = HUB_DIR / "context-windows.json"
 STATE_DIR = HOME / ".cache" / "claude-statusline"
 
 TIERS = ("FABLE", "OPUS", "SONNET", "HAIKU")
@@ -378,6 +394,11 @@ def build(payload):
 
 
 def main():
+    # Claude Code pipes this in and reads it back as UTF-8. Windows would
+    # otherwise use the ANSI code page for both, which cannot encode the bar
+    # and separator glyphs below.
+    for stream in (sys.stdin, sys.stdout):
+        stream.reconfigure(encoding="utf-8", errors="replace")
     try:
         payload = json.load(sys.stdin)
     except Exception:

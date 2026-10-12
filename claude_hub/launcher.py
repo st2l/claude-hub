@@ -1,11 +1,11 @@
 """Launch claude with the configured environment."""
 import os
-import shutil
 import subprocess
 import sys
 
 from claude_hub import integration
 from claude_hub.config import context_settings, get_key
+from claude_hub.system import IS_WINDOWS, find_claude
 
 
 def launch(cfg: dict, extra_args: list[str] | None = None):
@@ -41,12 +41,18 @@ def launch(cfg: dict, extra_args: list[str] | None = None):
 
     _apply_context(env, cfg)
 
-    claude_bin = (
-        shutil.which("claude") or
-        os.path.expanduser("~/.local/bin/claude")
-    )
+    claude_bin = find_claude()
+    if not claude_bin:
+        print("\033[1;31mclaude not found on PATH.\033[0m")
+        if IS_WINDOWS:
+            print("Install it with:  irm https://claude.ai/install.ps1 | iex")
+        else:
+            print("Install it with:  curl -fsSL https://claude.ai/install.sh | bash")
+        sys.exit(1)
+
     args = [claude_bin] + (extra_args or [])
-    subprocess.run(args, env=env)
+    done = subprocess.run(args, env=env, check=False)
+    sys.exit(done.returncode)
 
 
 def _apply_context(env: dict, cfg: dict):
