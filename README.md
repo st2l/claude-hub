@@ -79,14 +79,23 @@ There is no provider out of the box. Open the TUI, press `a` on the
 
 ### What each tab does
 
-- **Dashboard** — current profile, active provider, tier assignments, launch.
+- **Dashboard** — current profile, the provider a launch will route to, tier
+  assignments, launch.
 - **Providers** — add multiple backends. Two types:
   - `gateway` — CLIProxyAPI-style proxy exposing `/v1/models` (models get
     encoded to Claude-Code-compatible gateway IDs automatically);
   - `direct` — Anthropic-compatible API endpoint.
   Keys are stored in separate files (`chmod 600`), never in the config JSON.
+  Gateways carry an `encode_model_ids` flag (set when adding/editing, shown as
+  `raw` in the list when off). Leave it on for a gateway that decodes
+  claude-hub's `claude-fable-5-dd-…` id disguise; turn it off for one that
+  expects the raw `openrouter/…`-style id and otherwise answers
+  `no active credentials for provider: claude-fable-5-dd-…`.
 - **Models** — everything from all active providers, searchable, one `Enter`
-  away from being assigned to any tier.
+  away from being assigned to any tier. Claude Code routes a whole session
+  through one gateway, so at launch claude-hub sends it to whichever active
+  provider actually serves the models the tiers point at — assign models from
+  any provider and the right gateway is picked for you.
 - **Tiers** — map Claude Code's `ANTHROPIC_DEFAULT_{FABLE,OPUS,SONNET,HAIKU}_MODEL`.
 - **Profiles** — named tier presets; activate one and launch.
 - **Context**: context window, compaction and the statusline (see below).
@@ -104,7 +113,8 @@ Windows:
       "type": "gateway",
       "url": "https://gw.example.com",
       "key_file": "~/.secrets/my-key",
-      "active": true
+      "active": true,
+      "encode_model_ids": true
     }
   ],
   "tiers": {
@@ -117,7 +127,7 @@ Windows:
   "profiles": { "default": { "...": "same shape as tiers" } },
   "context": {
     "window": 1000000,
-    "disable_compact": true,
+    "disable_compact": false,
     "statusline": true
   }
 }
@@ -131,27 +141,45 @@ safely.
 Launch sets `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, the four
 `ANTHROPIC_DEFAULT_*_MODEL` vars and `CLAUDE_CODE_SUBAGENT_MODEL=inherit`,
 then execs `claude`. Aliases / other claude wrappers are never touched.
+`ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN` come from the active provider that
+serves the assigned tier models; with a single active provider it is simply
+that one.
 
 ## Context window
 
-Claude Code trusts a model's advertised context window only on the
-first-party API. Behind a gateway it cannot vouch for the model, falls back to
-a 200k floor and starts auto-compacting there, however much the model really
-holds. The one lever is `CLAUDE_CODE_MAX_CONTEXT_TOKENS`, and Claude Code
-reads it only while `DISABLE_COMPACT` is set, so the two always travel
-together.
+Claude Code finds a model's real window from the `claude-*` name inside its
+id, gateway or not: `cc/claude-opus-5` resolves to 1M and
+`no-think/cc/claude-haiku-4-5-20251001` to 200k, with no help from us. So
+claude-hub launches with **compaction on** and overrides nothing, and tiers
+holding models with different windows each compact against their own.
 
-claude-hub therefore launches with a 1M window and compaction off by default:
+A model Claude Code cannot name is a different case. It assumes 200k and, as
+of 2.1.x, auto-compaction holds the session there. claude-hub lifts that when
+it knows better, using the window the provider advertises in `/v1/models`
+(`context_length` / `max_input_tokens`), or an entry in
+`context-windows.json`, which overrides it:
+
+```bash
+CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT=1
+CLAUDE_CODE_AUTO_COMPACT_WINDOW=<the model's real window>
+```
+
+Compaction stays on; only the 200k assumption is lifted. With several unknown
+models assigned, the trigger is the smallest of their windows, so the lowest
+one stays safe.
+
+Turning compaction off on the **Context** tab is the other regime, and it is a
+real trade. `CLAUDE_CODE_MAX_CONTEXT_TOKENS` is read only while
+`DISABLE_COMPACT` is set, so one window applies to every model and manual
+`/compact` stops working too:
 
 ```bash
 DISABLE_COMPACT=1 CLAUDE_CODE_MAX_CONTEXT_TOKENS=1000000
 ```
 
-The price is real: no auto-compaction and no manual `/compact` either. Nothing
-trims the conversation any more, and past the model's real window the API
-simply starts rejecting requests, with `/clear` as the way out. That is what
-the statusline is for. Change the window, or hand compaction back to Claude
-Code, on the **Context** tab.
+Nothing trims the conversation then, and past a model's real window the API
+starts rejecting requests, with `/clear` as the way out. Worth it only to hold
+a window Claude Code would not otherwise grant.
 
 ## Statusline
 

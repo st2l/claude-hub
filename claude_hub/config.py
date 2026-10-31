@@ -24,13 +24,14 @@ TIER_LABELS = {
     "HAIKU": f"Haiku  {_DASH} fast / background",
 }
 
-# Claude Code clamps every model it cannot vouch for to 200k tokens, and
-# through a gateway it can never vouch for one. CLAUDE_CODE_MAX_CONTEXT_TOKENS
-# lifts the clamp, but only while DISABLE_COMPACT is set, so the two always
-# travel together. See claude_hub/launcher.py for what gets exported.
+# Compaction is on by default: Claude Code resolves a recognised Claude model's
+# real window by name, even through a gateway, so there is nothing to override
+# for the common case. `window` is only consulted when compaction is switched
+# off, because CLAUDE_CODE_MAX_CONTEXT_TOKENS is read only while
+# DISABLE_COMPACT is set. See claude_hub/launcher.py for what gets exported.
 DEFAULT_CONTEXT = {
     "window": 1_000_000,
-    "disable_compact": True,
+    "disable_compact": False,
     "statusline": True,
 }
 

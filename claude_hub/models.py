@@ -78,6 +78,7 @@ def _get_json(url: str, headers: dict) -> dict | None:
 
 def _fetch_gateway(provider: dict) -> list[dict]:
     key = get_key(provider)
+    encode = provider.get("encode_model_ids", True)
     url = provider["url"].rstrip("/") + "/v1/models"
     data = _get_json(url, {
         "Authorization": f"Bearer {key}",
@@ -86,7 +87,7 @@ def _fetch_gateway(provider: dict) -> list[dict]:
     if data:
         raw = data.get("data", data.get("models", []))
         if raw:
-            return [_parse_api_model(m) for m in raw]
+            return [_parse_api_model(m, encode) for m in raw]
 
     cpa_cache = Path.home() / ".claude" / "cache" / "gateway-models.json"
     if cpa_cache.exists():
@@ -114,7 +115,26 @@ def _fetch_direct(provider: dict) -> list[dict]:
     return [_parse_api_model(m) for m in raw]
 
 
-def _parse_api_model(m: dict) -> dict:
+def _advertised_window(m: dict) -> int | None:
+    """The input window the provider claims for this model, if it claims one.
+
+    An OpenAI-shaped /v1/models lists it as context_length or
+    max_input_tokens. It is the only per-model window we get for a model
+    Claude Code cannot name, so compaction for those rides on it rather than
+    on a hand-maintained table.
+    """
+    for key in ("context_length", "max_input_tokens", "context_window"):
+        value = m.get(key)
+        try:
+            value = int(value)
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            return value
+    return None
+
+
+def _parse_api_model(m: dict, encode: bool = True) -> dict:
     clean_id = m.get("id", "")
     provider = m.get("owned_by", "")
     name = m.get("display_name", "")
@@ -133,13 +153,19 @@ def _parse_api_model(m: dict) -> dict:
         else:
             name = clean_id
 
-    cpa_id = _encode_cpa_id(clean_id)
+    # Some gateways decode claude-hub's "claude-fable-5-dd-…" disguise back to
+    # the real id; others (e.g. a stock CLIProxyAPI) want the raw id and read
+    # the disguise literally as a provider name, failing with "no credentials
+    # for provider: claude-fable-5-dd-…". The provider's encode_model_ids flag
+    # says which kind this is.
+    cpa_id = _encode_cpa_id(clean_id) if encode else clean_id
 
     return {
         "id": cpa_id,
         "clean_id": clean_id,
         "name": name,
         "provider": provider,
+        "window": _advertised_window(m),
     }
 
 

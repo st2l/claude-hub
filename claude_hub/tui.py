@@ -6,7 +6,7 @@ from claude_hub import config
 from claude_hub import integration
 from claude_hub import models as mdl
 from claude_hub import updater
-from claude_hub.launcher import launch
+from claude_hub.launcher import launch, resolve_provider
 from claude_hub.system import GLYPH
 
 ENTER_KEYS = (10, 13, curses.KEY_ENTER)
@@ -71,10 +71,21 @@ class App:
         self.profile_cursor = 0
         self.prov_cursor = 0
         self.ctx_cursor = 0
+        self.route_provider: dict | None = None
+        self.route_notes: list[str] = []
 
     def _load_models(self, force: bool = False):
         self.models_cache = mdl.all_models(self.cfg, force=force)
+        self._recompute_route()
         self.status = f"{len(self.models_cache)} models loaded"
+
+    def _recompute_route(self):
+        """Work out which provider a launch would route to, for the Dashboard.
+
+        Depends on both the active providers and the current tier assignments,
+        so it is re-run whenever either changes rather than on every frame.
+        """
+        self.route_provider, self.route_notes = resolve_provider(self.cfg)
 
     def _show_loading(self, msg: str = "Fetching models from providers..."):
         h, w = self.scr.getmaxyx()
@@ -227,30 +238,36 @@ class App:
         y = 2
         tiers = self.cfg.get("tiers", {})
         provs = self.cfg.get("providers", [])
-        active_provs = [p for p in provs if p.get("active", True)]
+        route = self.route_provider
         profile = self.cfg.get("active_profile", "default")
 
         self._title(y, "Current Configuration"); y += 2
         self._label(y, 4, "Profile:", profile); y += 1
-        self._label(
-            y, 4, "Provider:",
-            active_provs[0]["name"] if active_provs else "none",
-        )
+        self._label(y, 4, "Routes to:", route["name"] if route else "none")
         y += 1
-        if active_provs:
-            self._label(y, 4, "URL:", active_provs[0]["url"])
+        if route:
+            self._label(y, 4, "URL:", route["url"])
             y += 1
-            key = config.get_key(active_provs[0])
+            key = config.get_key(route)
             masked = key[:6] + "..." + key[-4:] if len(key) > 10 else key
             self._label(y, 4, "Key:", masked)
-        y += 2
+            y += 1
+        for note in self.route_notes:
+            try:
+                self.scr.addstr(y, 4, f"! {note}"[:w - 6],
+                                curses.color_pair(C_WARN))
+            except curses.error:
+                pass
+            y += 1
+        y += 1
 
         ctx = config.context_settings(self.cfg)
         if ctx["disable_compact"]:
             self._label(y, 4, "Context:",
                         f"{_human(ctx['window'])} tokens, no compaction")
         else:
-            self._label(y, 4, "Context:", "Claude Code default (200k, compacts)")
+            self._label(y, 4, "Context:",
+                        "compaction on, real window per model")
         y += 2
 
         self._title(y, "Tier Assignments"); y += 2
@@ -296,7 +313,10 @@ class App:
             key = config.get_key(p)
             has_key = GLYPH["yes"] if key else GLYPH["no"]
             key_color = C_OK if key else C_WARN
-            line = f"  {marker} {p['name']:<20} {p['type']:<10} {p['url']:<35}"
+            ptype = p["type"]
+            if ptype == "gateway":
+                ptype += " raw" if not p.get("encode_model_ids", True) else ""
+            line = f"  {marker} {p['name']:<20} {ptype:<14} {p['url']:<32}"
             try:
                 self.scr.addstr(y, 2, line[:w - 4], attr)
                 self.scr.addstr(
@@ -366,6 +386,18 @@ class App:
             "active": True,
         }
 
+        if ptype_val == "gateway":
+            scheme = self._choice_dialog(
+                "Model ID scheme",
+                [
+                    "Encoded IDs (gateway decodes claude-hub's -dd- disguise)",
+                    "Raw IDs (gateway wants openrouter/... style ids as-is)",
+                ],
+            )
+            if scheme is None:
+                return
+            provider["encode_model_ids"] = scheme == 0
+
         key = self._input_dialog("API Key", "API Key (or empty to skip):")
         warning = config.set_key(provider, key) if key else None
 
@@ -381,6 +413,17 @@ class App:
         url = self._input_dialog("Edit URL", "URL:", prov["url"])
         if url:
             prov["url"] = url
+        if prov.get("type") == "gateway":
+            scheme = self._choice_dialog(
+                "Model ID scheme",
+                [
+                    "Encoded IDs (gateway decodes claude-hub's -dd- disguise)",
+                    "Raw IDs (gateway wants openrouter/... style ids as-is)",
+                ],
+            )
+            if scheme is not None:
+                prov["encode_model_ids"] = scheme == 0
+                self._load_models()
         config.save(self.cfg)
         self.status = f"Updated: {prov['name']}"
 
@@ -497,6 +540,7 @@ class App:
                 tier_key = list(config.TIER_LABELS.keys())[tier]
                 self.cfg["tiers"][tier_key] = m["id"]
                 config.save(self.cfg)
+                self._recompute_route()
                 self.status = f'{tier_key} {GLYPH["arrow"]} {m["name"]}'
 
     # ── Tiers ─────────────────────────────────────────────
@@ -552,6 +596,7 @@ class App:
             if idx is not None:
                 self.cfg["tiers"][tier] = models[idx]["id"]
                 config.save(self.cfg)
+                self._recompute_route()
                 self.status = (
                     f'{tier} {GLYPH["arrow"]} {models[idx]["name"]}'
                 )
@@ -559,6 +604,7 @@ class App:
             tier = tier_keys[self.tier_cursor]
             self.cfg["tiers"][tier] = config.DEFAULT_TIERS[tier]
             config.save(self.cfg)
+            self._recompute_route()
             self.status = f"{tier} reset to default"
 
     # ── Profiles ──────────────────────────────────────────
@@ -618,6 +664,7 @@ class App:
             self.cfg["active_profile"] = name
             self.cfg["tiers"] = dict(profiles[name])
             config.save(self.cfg)
+            self._recompute_route()
             self.status = f"Activated profile: {name}"
         elif k == ord("a"):
             name = self._input_dialog("New Profile", "Profile name:")
@@ -654,11 +701,11 @@ class App:
         y = 2
 
         if ctx["disable_compact"]:
-            window = f"{_human(ctx['window'])} tokens"
-            compaction = "off, the window above is in force"
+            window = f"{_human(ctx['window'])} tokens, every model"
+            compaction = "off, /compact disabled too"
         else:
-            window = f"{_human(ctx['window'])} tokens (not applied)"
-            compaction = "on, Claude Code compacts at its own 200k floor"
+            window = f"{_human(ctx['window'])} tokens (unused while compacting)"
+            compaction = "on, each model against its own window"
 
         statusline = {
             "ours": "on, registered in ~/.claude/settings.json",
@@ -668,7 +715,7 @@ class App:
 
         rows = [
             ("Window", window, ctx["disable_compact"]),
-            ("Compaction", compaction, not ctx["disable_compact"]),
+            ("Compaction", compaction, True),
             ("Statusline", statusline, ctx["statusline"] and state != "other"),
         ]
 
@@ -688,14 +735,19 @@ class App:
 
         y += 1
         for line in (
-            "Claude Code trusts a model's real window only on the first-party",
-            "API. Behind a gateway it assumes 200k and compacts there. Raising",
-            "the window is the same switch as turning compaction off: /compact",
-            "stops working too, and past the model's real limit the API starts",
-            "refusing requests, so the way out becomes /clear.",
+            "With compaction on, Claude Code reads each model's real window",
+            "from its claude-* name, gateway or not, so tiers with different",
+            "windows each compact against their own. A model it cannot name",
+            "is assumed to be 200k; claude-hub lifts that and compacts at the",
+            "real window from the list below instead.",
             "",
-            "The statusline draws against the real windows below, not against",
-            "the number above, and turns red before the real limit.",
+            "Turning compaction off forces one window on every model and",
+            "disables /compact as well, because Claude Code reads the window",
+            "only while compaction is off. Past a model's real limit the API",
+            "refuses requests and the way out becomes /clear.",
+            "",
+            "The statusline draws against the real windows below and turns",
+            "red before the real limit.",
         ):
             try:
                 self.scr.addstr(y, 4, line[:w - 6], curses.color_pair(C_DIM))
